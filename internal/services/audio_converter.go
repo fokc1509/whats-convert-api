@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -202,19 +203,33 @@ func (ac *AudioConverter) convertToOpusAdvanced(ctx context.Context, input []byt
 
 // getAudioDuration gets the duration of audio in seconds
 func (ac *AudioConverter) getAudioDuration(ctx context.Context, audioData []byte) int {
-	// Use ffprobe to get duration without re-encoding
+	// Create a temporary file to store the audio data
+	// ffprobe cannot reliably determine duration of OGG/Opus from a pipe because it needs to seek
+	tmpFile, err := os.CreateTemp("", "audio-*.ogg")
+	if err != nil {
+		// If we can't create a temp file, we can't get the duration
+		return 0
+	}
+	defer os.Remove(tmpFile.Name()) // Clean up after ourselves
+
+	// Write audio data to temp file
+	if _, err := tmpFile.Write(audioData); err != nil {
+		tmpFile.Close()
+		return 0
+	}
+	tmpFile.Close() // Close file so ffprobe can read it
+
+	// Use ffprobe to get duration from the file
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-hide_banner",
 		"-loglevel", "error",
-		"-i", "pipe:0",
+		"-i", tmpFile.Name(), // Read from file instead of pipe
 		"-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1",
 	)
-
-	cmd.Stdin = bytes.NewReader(audioData)
 
 	output, err := cmd.Output()
 	if err != nil {
