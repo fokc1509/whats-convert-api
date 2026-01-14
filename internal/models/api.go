@@ -64,18 +64,28 @@ type ImageHealthMetrics struct {
 	VipsAvailable     bool   `json:"vips_available" example:"true"`
 }
 
+// VideoHealthMetrics aggregates health metrics for the video converter.
+type VideoHealthMetrics struct {
+	TotalConversions  int64  `json:"total_conversions" example:"50"`
+	FailedConversions int64  `json:"failed_conversions" example:"2"`
+	SuccessRate       string `json:"success_rate" example:"96.00%"`
+	AvgConversionMS   int64  `json:"avg_conversion_time" example:"1200"`
+}
+
 // HealthResponse captures the payload returned by GET /health.
 type HealthResponse struct {
 	Status    string             `json:"status" example:"healthy"`
 	Timestamp int64              `json:"timestamp" example:"1700000000"`
 	Audio     AudioHealthMetrics `json:"audio"`
 	Image     ImageHealthMetrics `json:"image"`
+	Video     VideoHealthMetrics `json:"video"`
 }
 
 // StatsResponse captures aggregated converter statistics returned by GET /stats.
 type StatsResponse struct {
 	Audio     ConverterStats      `json:"audio"`
 	Image     ImageConverterStats `json:"image"`
+	Video     ConverterStats      `json:"video"`
 	Timestamp int64               `json:"timestamp" example:"1700000000"`
 }
 

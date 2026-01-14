@@ -36,6 +36,7 @@ type Server struct {
 	downloader     *services.Downloader
 	audioConverter *services.AudioConverter
 	imageConverter *services.ImageConverter
+	videoConverter *services.VideoConverter
 	handler        *handlers.ConverterHandler
 	s3Service      *services.S3Service
 	uploadManager  *services.UploadManager
@@ -79,9 +80,10 @@ func (s *Server) Initialize() error {
 	// Initialize converters
 	s.audioConverter = services.NewAudioConverter(s.workerPool, s.bufferPool, s.downloader)
 	s.imageConverter = services.NewImageConverter(s.workerPool, s.bufferPool, s.downloader)
+	s.videoConverter = services.NewVideoConverter(s.workerPool, s.bufferPool, s.downloader)
 
 	// Initialize handler
-	s.handler = handlers.NewConverterHandler(s.audioConverter, s.imageConverter, s.config.RequestTimeout)
+	s.handler = handlers.NewConverterHandler(s.audioConverter, s.imageConverter, s.videoConverter, s.config.RequestTimeout)
 
 	// Initialize S3 services if enabled
 	if s.config.S3.Enabled {
@@ -193,6 +195,7 @@ func (s *Server) setupRoutes() {
 	// Single conversion endpoints
 	s.app.Post("/convert/audio", s.handler.ConvertAudio)
 	s.app.Post("/convert/image", s.handler.ConvertImage)
+	s.app.Post("/convert/video", s.handler.ConvertVideo)
 
 	// Batch conversion endpoints
 	s.app.Post("/convert/batch/audio", s.handler.ConvertBatchAudio)

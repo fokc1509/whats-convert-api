@@ -20,6 +20,7 @@ import (
 type ConverterHandler struct {
 	audioConverter *services.AudioConverter
 	imageConverter *services.ImageConverter
+	videoConverter *services.VideoConverter
 	requestTimeout time.Duration
 }
 
@@ -27,6 +28,7 @@ type ConverterHandler struct {
 func NewConverterHandler(
 	audioConverter *services.AudioConverter,
 	imageConverter *services.ImageConverter,
+	videoConverter *services.VideoConverter,
 	requestTimeout time.Duration,
 ) *ConverterHandler {
 	if requestTimeout <= 0 {
@@ -36,6 +38,7 @@ func NewConverterHandler(
 	return &ConverterHandler{
 		audioConverter: audioConverter,
 		imageConverter: imageConverter,
+		videoConverter: videoConverter,
 		requestTimeout: requestTimeout,
 	}
 }
@@ -84,6 +87,29 @@ func (h *ConverterHandler) ConvertImage(c fiber.Ctx) error {
 	}
 
 	return h.processImageConversion(c, req)
+}
+
+// ConvertVideo godoc
+// @Summary Convert video to WhatsApp-compatible MP4 (Max 16MB)
+// @Description Accepts base64 payloads or multipart uploads and returns an optimized MP4 data URI.
+// @Tags Conversion
+// @Accept json
+// @Accept multipart/form-data
+// @Produce json
+// @Param request body services.VideoRequest true "Video conversion request"
+// @Param file formData file false "Video file when using multipart"
+// @Success 200 {object} services.VideoResponse
+// @Failure 400 {object} models.ErrorResponse
+// @Failure 408 {object} models.ErrorResponse
+// @Failure 500 {object} models.ErrorResponse
+// @Router /convert/video [post]
+func (h *ConverterHandler) ConvertVideo(c fiber.Ctx) error {
+	req, err := h.parseVideoRequest(c)
+	if err != nil {
+		return respondWithError(c, err)
+	}
+
+	return h.processVideoConversion(c, req)
 }
 
 // ConvertBatchAudio godoc
@@ -227,6 +253,7 @@ func (h *ConverterHandler) Health(c fiber.Ctx) error {
 	// Get converter stats
 	audioStats := h.audioConverter.GetStats()
 	imageStats := h.imageConverter.GetStats()
+	videoStats := h.videoConverter.GetStats()
 
 	// Calculate success rates
 	audioSuccessRate := float64(0)
@@ -255,6 +282,13 @@ func (h *ConverterHandler) Health(c fiber.Ctx) error {
 			AvgConversionMS:   imageStats.AvgConversionTime.Milliseconds(),
 			VipsAvailable:     h.imageConverter.IsVipsAvailable(),
 		},
+			VipsAvailable:     h.imageConverter.IsVipsAvailable(),
+		},
+		Video: models.VideoHealthMetrics{
+			TotalConversions:  videoStats.TotalConversions,
+			FailedConversions: videoStats.FailedConversions,
+			AvgConversionMS:   videoStats.AvgConversionTime.Milliseconds(),
+		},
 	})
 }
 
@@ -268,6 +302,7 @@ func (h *ConverterHandler) Health(c fiber.Ctx) error {
 func (h *ConverterHandler) Stats(c fiber.Ctx) error {
 	audioStats := h.audioConverter.GetStats()
 	imageStats := h.imageConverter.GetStats()
+	videoStats := h.videoConverter.GetStats()
 
 	return c.JSON(models.StatsResponse{
 		Audio: models.ConverterStats{
@@ -281,6 +316,12 @@ func (h *ConverterHandler) Stats(c fiber.Ctx) error {
 			AvgConversionTimeMS: imageStats.AvgConversionTime.Milliseconds(),
 			VipsConversions:     imageStats.VipsConversions,
 			FFmpegConversions:   imageStats.FFmpegConversions,
+			FFmpegConversions:   imageStats.FFmpegConversions,
+		},
+		Video: models.ConverterStats{
+			TotalConversions:    videoStats.TotalConversions,
+			FailedConversions:   videoStats.FailedConversions,
+			AvgConversionTimeMS: videoStats.AvgConversionTime.Milliseconds(),
 		},
 		Timestamp: time.Now().Unix(),
 	})
@@ -307,6 +348,20 @@ func (h *ConverterHandler) parseImageRequest(c fiber.Ctx) (*services.ImageReques
 	}
 
 	var req services.ImageRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return nil, newRequestError(fiber.StatusBadRequest, "Invalid request body", err.Error())
+	}
+
+	return &req, nil
+}
+
+func (h *ConverterHandler) parseVideoRequest(c fiber.Ctx) (*services.VideoRequest, error) {
+	contentType := strings.ToLower(c.Get("Content-Type"))
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		return parseMultipartVideo(c)
+	}
+
+	var req services.VideoRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return nil, newRequestError(fiber.StatusBadRequest, "Invalid request body", err.Error())
 	}
@@ -372,6 +427,46 @@ func (h *ConverterHandler) processImageConversion(c fiber.Ctx, req *services.Ima
 
 	start := time.Now()
 	response, err := h.imageConverter.Convert(ctx, req)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return c.Status(fiber.StatusRequestTimeout).JSON(models.ErrorResponse{
+				Error:   "Request timeout",
+				Details: "Conversion took too long",
+			})
+		}
+
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "Conversion failed",
+			Details: err.Error(),
+		})
+	}
+
+	c.Set("X-Processing-Time", fmt.Sprintf("%dms", time.Since(start).Milliseconds()))
+	c.Set("X-Output-Size", fmt.Sprintf("%d", response.Size))
+	c.Set("X-Output-Dimensions", fmt.Sprintf("%dx%d", response.Width, response.Height))
+
+	return c.JSON(response)
+}
+
+func (h *ConverterHandler) processVideoConversion(c fiber.Ctx, req *services.VideoRequest) error {
+	if req == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error: "Invalid request",
+		})
+	}
+
+	req.Data = sanitizeBase64Data(req.Data)
+	if strings.TrimSpace(req.Data) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error: "Missing 'data' field",
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), h.requestTimeout*2) // Double timeout for video
+	defer cancel()
+
+	start := time.Now()
+	response, err := h.videoConverter.Convert(ctx, req)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return c.Status(fiber.StatusRequestTimeout).JSON(models.ErrorResponse{
@@ -480,6 +575,42 @@ func parseMultipartImage(c fiber.Ctx) (*services.ImageRequest, error) {
 	}
 
 	return req, nil
+}
+
+func parseMultipartVideo(c fiber.Ctx) (*services.VideoRequest, error) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		return nil, newRequestError(fiber.StatusBadRequest, "Missing file", "file field is required")
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		return nil, newRequestError(fiber.StatusInternalServerError, "Failed to open uploaded file", err.Error())
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, newRequestError(fiber.StatusInternalServerError, "Failed to read uploaded file", err.Error())
+	}
+	if len(data) == 0 {
+		return nil, newRequestError(fiber.StatusBadRequest, "Uploaded file is empty", "")
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(data)
+	inputType := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileHeader.Filename)), ".")
+	if inputType == "" {
+		inputType = deriveInputTypeFromContentType(fileHeader.Header.Get("Content-Type"))
+	}
+	if formType := strings.TrimSpace(c.FormValue("input_type")); formType != "" {
+		inputType = formType
+	}
+
+	return &services.VideoRequest{
+		Data:      encoded,
+		IsURL:     false,
+		InputType: inputType,
+	}, nil
 }
 
 type requestError struct {
