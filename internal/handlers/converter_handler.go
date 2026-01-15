@@ -282,8 +282,6 @@ func (h *ConverterHandler) Health(c fiber.Ctx) error {
 			AvgConversionMS:   imageStats.AvgConversionTime.Milliseconds(),
 			VipsAvailable:     h.imageConverter.IsVipsAvailable(),
 		},
-			VipsAvailable:     h.imageConverter.IsVipsAvailable(),
-		},
 		Video: models.VideoHealthMetrics{
 			TotalConversions:  videoStats.TotalConversions,
 			FailedConversions: videoStats.FailedConversions,
@@ -315,7 +313,6 @@ func (h *ConverterHandler) Stats(c fiber.Ctx) error {
 			FailedConversions:   imageStats.FailedConversions,
 			AvgConversionTimeMS: imageStats.AvgConversionTime.Milliseconds(),
 			VipsConversions:     imageStats.VipsConversions,
-			FFmpegConversions:   imageStats.FFmpegConversions,
 			FFmpegConversions:   imageStats.FFmpegConversions,
 		},
 		Video: models.ConverterStats{
