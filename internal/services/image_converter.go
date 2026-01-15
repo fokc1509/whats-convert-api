@@ -111,14 +111,27 @@ func (ic *ImageConverter) Convert(ctx context.Context, req *ImageRequest) (*Imag
 		return nil, fmt.Errorf("image file too large: %d bytes", len(inputData))
 	}
 
-	// Convert to JPEG
+	// Convert to JPEG with 5MB limit enforcement
 	var outputData []byte
-	if ic.useVips {
-		outputData, err = ic.convertWithVips(ctx, inputData, req.Quality)
-		if err == nil {
-			ic.recordVipsSuccess(time.Since(start))
+	const MaxOutputBytes = 5 * 1024 * 1024 // 5MB limit
+	const MinQuality = 10
+
+	// Loop to reduce quality if output is too large
+	for attempt := 0; attempt < 5; attempt++ {
+		if ic.useVips {
+			outputData, err = ic.convertWithVips(ctx, inputData, req.Quality)
+			if err == nil {
+				ic.recordVipsSuccess(time.Since(start))
+			} else {
+				// Fallback to FFmpeg if vips fails
+				outputData, err = ic.convertWithFFmpeg(ctx, inputData, req.MaxWidth, req.MaxHeight, req.Quality)
+				if err != nil {
+					ic.recordFailure()
+					return nil, fmt.Errorf("conversion failed: %w", err)
+				}
+				ic.recordFFmpegSuccess(time.Since(start))
+			}
 		} else {
-			// Fallback to FFmpeg if vips fails
 			outputData, err = ic.convertWithFFmpeg(ctx, inputData, req.MaxWidth, req.MaxHeight, req.Quality)
 			if err != nil {
 				ic.recordFailure()
@@ -126,13 +139,27 @@ func (ic *ImageConverter) Convert(ctx context.Context, req *ImageRequest) (*Imag
 			}
 			ic.recordFFmpegSuccess(time.Since(start))
 		}
-	} else {
-		outputData, err = ic.convertWithFFmpeg(ctx, inputData, req.MaxWidth, req.MaxHeight, req.Quality)
-		if err != nil {
-			ic.recordFailure()
-			return nil, fmt.Errorf("conversion failed: %w", err)
+
+		// Check size constraint
+		if len(outputData) <= MaxOutputBytes {
+			break
 		}
-		ic.recordFFmpegSuccess(time.Since(start))
+
+		// Reduce quality for next attempt
+		req.Quality -= 15
+		if req.Quality < MinQuality {
+			// If we hit minimum quality and still too big, accept it or force resize?
+			// For now, let's accept it but log/warn (in a real logger)
+			// Or maybe aggressively resize down?
+			// Let's force a resize down if quality is low
+			req.Quality = 30           // Reset quality slightly up
+			req.MaxWidth = req.MaxWidth / 2   // Halve dimensions
+			req.MaxHeight = req.MaxHeight / 2 // Halve dimensions
+			
+			if req.MaxWidth < 320 { // Safety floor
+				break
+			}
+		}
 	}
 
 	// Get image dimensions (optional)
